@@ -1,0 +1,12 @@
+services:
+  iptables-web:
+    build: .
+    container_name: iptables-web
+    privileged: true
+    network_mode: host
+    restart: always
+    environment:
+      - AUTH_USERNAME=admin123
+      - AUTH_PASSWORD=admin123
+    volumes:
+      - ./data:/app/data
