@@ -159,7 +159,7 @@ mod io {
         let n = recv_mul_pkts(sock, &mut msgs[..pkt_amt]).await?;
         for (pkt, msg) in pkts.iter_mut().zip(msgs.iter()).take(n) {
             pkt.len = msg.get_ref().nbytes() as u16;
-            pkt.peer = msg.get_ref().addr().clone().into();
+            pkt.peer = SocketAddr::from(msg.get_ref().addr().clone());
         }
         Ok(n)
     }
@@ -185,7 +185,7 @@ mod io {
         let mut addrs: Vec<SockAddrStore> = collected.iter().map(|(_, a)| (*a).into()).collect();
         let mut iovs: Vec<IoSlice<'_>> =
             collected.iter().map(|(buf, _)| IoSlice::new(buf)).collect();
-        let mut msgs: Vec<MmsgHdr<'_, '_, '_>> = Vec::with_capacity(pkt_amt);
+        let mut msgs: Vec<MmsgHdr<'_, '_, '_, '_>> = Vec::with_capacity(pkt_amt);
 
         for (idx, ((_, _), addr)) in collected.iter().zip(addrs.iter_mut()).enumerate() {
             msgs.push(
