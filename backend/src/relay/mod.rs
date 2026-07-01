@@ -1,4 +1,4 @@
-//! realm_core 转发栈：DNS + realm_io（TCP）+ 端口级流量统计。
+//! realm_core 转发栈：DNS + realm_io（TCP）+ batched UDP + 端口级流量统计。
 
 mod counted;
 mod endpoint;

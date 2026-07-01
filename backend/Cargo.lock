@@ -1518,6 +1518,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "socket2",
  "sqlx",
  "tempfile",
  "tokio",
@@ -1527,6 +1528,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

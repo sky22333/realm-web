@@ -13,6 +13,7 @@ chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9"
 mime_guess = "2"
 realm_core = { version = "0.5.1", features = ["batched-udp"] }
+socket2 = "0.6"
 rust-embed = { version = "8", features = ["debug-embed"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,6 +25,9 @@ tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 tempfile = "3"
