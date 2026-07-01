@@ -19,6 +19,17 @@ impl CountedTcpStream {
     pub fn new(inner: tokio::net::TcpStream, meter: Arc<TrafficMeter>) -> Self {
         Self { inner, meter }
     }
+
+    /// zero-copy 路径不经 AsyncRead/AsyncWrite，需手动记账。
+    #[cfg(target_os = "linux")]
+    fn record_transferred(&self, local_to_remote: u64, remote_to_local: u64) {
+        if local_to_remote > 0 {
+            self.meter.add_tcp_rx(local_to_remote);
+        }
+        if remote_to_local > 0 {
+            self.meter.add_tcp_tx(remote_to_local);
+        }
+    }
 }
 
 impl AsyncRead for CountedTcpStream {
@@ -61,6 +72,41 @@ impl AsyncWrite for CountedTcpStream {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux_raw {
+    use std::os::unix::io::{AsRawFd, RawFd};
+    use std::task::{Context, Poll};
+
+    use realm_core::realm_io::AsyncRawIO;
+    use tokio::io::Interest;
+
+    use super::CountedTcpStream;
+
+    impl AsRawFd for CountedTcpStream {
+        fn as_raw_fd(&self) -> RawFd {
+            self.inner.as_raw_fd()
+        }
+    }
+
+    impl AsyncRawIO for CountedTcpStream {
+        fn x_poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+            self.inner.poll_read_ready(cx)
+        }
+
+        fn x_poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+            self.inner.poll_write_ready(cx)
+        }
+
+        fn x_try_io<R>(
+            &self,
+            interest: Interest,
+            f: impl FnOnce() -> Result<R>,
+        ) -> Result<R> {
+            self.inner.try_io(interest, f)
+        }
+    }
+}
+
 /// realm_io 双向转发（Linux 优先 zero-copy）。
 pub async fn bidi_relay(
     local: &mut CountedTcpStream,
@@ -71,7 +117,10 @@ pub async fn bidi_relay(
     #[cfg(target_os = "linux")]
     {
         match realm_io::bidi_zero_copy(local, remote).await {
-            Ok(()) => Ok(()),
+            Ok((local_to_remote, remote_to_local)) => {
+                local.record_transferred(local_to_remote, remote_to_local);
+                Ok(())
+            }
             Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
                 realm_io::bidi_copy(local, remote).await.map(|_| ())
             }
