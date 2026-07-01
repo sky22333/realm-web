@@ -68,16 +68,22 @@ impl Batch {
     pub fn group_by_peer(&mut self) {
         let n = self.count as usize;
         self.groups.clear();
-        group_by_peer(&mut self.pkts[..n], &mut self.groups, |a, b| a.peer == b.peer);
+        group_by_peer(&mut self.pkts[..n], &mut self.groups, |a, b| {
+            a.peer == b.peer
+        });
     }
 
     pub fn peer_groups(&self) -> impl Iterator<Item = &[Packet]> + '_ {
-        self.groups.iter().map(move |r| {
-            &self.pkts[r.start as usize..r.end as usize]
-        })
+        self.groups
+            .iter()
+            .map(move |r| &self.pkts[r.start as usize..r.end as usize])
     }
 
-    pub async fn send_to_remote(sock: &UdpSocket, pkts: &[Packet], remote: SocketAddr) -> Result<()> {
+    pub async fn send_to_remote(
+        sock: &UdpSocket,
+        pkts: &[Packet],
+        remote: SocketAddr,
+    ) -> Result<()> {
         send_to_remote(sock, pkts, remote).await
     }
 
@@ -125,7 +131,9 @@ mod io {
     use std::io::{IoSlice, IoSliceMut};
     use std::mem::MaybeUninit;
 
-    use realm_core::realm_io::mmsg::{recv_mul_pkts, send_mul_pkts, MmsgHdr, MmsgHdrMut, SockAddrStore};
+    use realm_core::realm_io::mmsg::{
+        MmsgHdr, MmsgHdrMut, SockAddrStore, recv_mul_pkts, send_mul_pkts,
+    };
 
     pub async fn recv_some(sock: &UdpSocket, pkts: &mut [Packet]) -> Result<usize> {
         let pkt_amt = pkts.len().min(MAX_PACKETS);
@@ -143,7 +151,9 @@ mod io {
         {
             *addr = SockAddrStore::new();
             *iov = IoSliceMut::new(&mut pkt.buf);
-            *msg = MmsgHdrMut::new().with_addr(addr).with_iovec(std::slice::from_mut(iov));
+            *msg = MmsgHdrMut::new()
+                .with_addr(addr)
+                .with_iovec(std::slice::from_mut(iov));
         }
 
         let n = recv_mul_pkts(sock, &mut msgs[..pkt_amt]).await?;
@@ -154,7 +164,11 @@ mod io {
         Ok(n)
     }
 
-    pub async fn send_to_remote(sock: &UdpSocket, pkts: &[Packet], remote: SocketAddr) -> Result<()> {
+    pub async fn send_to_remote(
+        sock: &UdpSocket,
+        pkts: &[Packet],
+        remote: SocketAddr,
+    ) -> Result<()> {
         send_pkts(sock, pkts.iter().map(|p| (p.payload(), remote))).await
     }
 
@@ -169,7 +183,8 @@ mod io {
 
         let collected: Vec<_> = pkts.collect();
         let mut addrs: Vec<SockAddrStore> = collected.iter().map(|(_, a)| (*a).into()).collect();
-        let mut iovs: Vec<IoSlice<'_>> = collected.iter().map(|(buf, _)| IoSlice::new(buf)).collect();
+        let mut iovs: Vec<IoSlice<'_>> =
+            collected.iter().map(|(buf, _)| IoSlice::new(buf)).collect();
         let mut msgs: Vec<MmsgHdr<'_, '_, '_>> = Vec::with_capacity(pkt_amt);
 
         for (idx, ((_, _), addr)) in collected.iter().zip(addrs.iter_mut()).enumerate() {
@@ -205,7 +220,11 @@ mod io {
         }
     }
 
-    pub async fn send_to_remote(sock: &UdpSocket, pkts: &[Packet], remote: SocketAddr) -> Result<()> {
+    pub async fn send_to_remote(
+        sock: &UdpSocket,
+        pkts: &[Packet],
+        remote: SocketAddr,
+    ) -> Result<()> {
         for pkt in pkts {
             sock.send_to(pkt.payload(), remote).await?;
         }

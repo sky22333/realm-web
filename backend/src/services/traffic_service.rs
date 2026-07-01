@@ -64,7 +64,10 @@ impl TrafficService {
     }
 
     /// 计算面板统计。
-    pub async fn dashboard_stats(&self, rules: &[crate::domain::RuleRecord]) -> crate::domain::DashboardStats {
+    pub async fn dashboard_stats(
+        &self,
+        rules: &[crate::domain::RuleRecord],
+    ) -> crate::domain::DashboardStats {
         let meters = self.meters.read().await;
         let mut total_traffic_bytes = 0u64;
         let mut quota_blocked_count = 0usize;
@@ -103,10 +106,18 @@ impl TrafficService {
 
             let meter = self.meter_for(rule).await;
             if let Some((tcp_rx, tcp_tx, udp_rx, udp_tx)) = row {
-                meter.tcp_rx.store(tcp_rx as u64, std::sync::atomic::Ordering::Relaxed);
-                meter.tcp_tx.store(tcp_tx as u64, std::sync::atomic::Ordering::Relaxed);
-                meter.udp_rx.store(udp_rx as u64, std::sync::atomic::Ordering::Relaxed);
-                meter.udp_tx.store(udp_tx as u64, std::sync::atomic::Ordering::Relaxed);
+                meter
+                    .tcp_rx
+                    .store(tcp_rx as u64, std::sync::atomic::Ordering::Relaxed);
+                meter
+                    .tcp_tx
+                    .store(tcp_tx as u64, std::sync::atomic::Ordering::Relaxed);
+                meter
+                    .udp_rx
+                    .store(udp_rx as u64, std::sync::atomic::Ordering::Relaxed);
+                meter
+                    .udp_tx
+                    .store(udp_tx as u64, std::sync::atomic::Ordering::Relaxed);
             }
         }
         Ok(())
@@ -238,8 +249,7 @@ async fn reset_quota_periods(state: &crate::state::AppState) -> anyhow::Result<(
             .get(&rule.local_port)
             .map(|m| m.snapshot())
             .unwrap_or_default();
-        let was_quota_blocked =
-            !rule.enabled && TrafficService::is_quota_exceeded(&rule, &totals);
+        let was_quota_blocked = !rule.enabled && TrafficService::is_quota_exceeded(&rule, &totals);
 
         state.rules.reset_traffic(rule.local_port).await?;
         state.traffic.reset_meter(rule.local_port).await;
@@ -258,7 +268,6 @@ async fn reset_quota_periods(state: &crate::state::AppState) -> anyhow::Result<(
 }
 
 async fn enforce_quotas(state: &crate::state::AppState) -> anyhow::Result<()> {
-
     let rules = state.rules.list().await?;
     let meters = state.traffic.all_meters().await;
 
@@ -266,7 +275,9 @@ async fn enforce_quotas(state: &crate::state::AppState) -> anyhow::Result<()> {
         if !rule.enabled {
             continue;
         }
-        let Some(quota) = rule.quota_bytes else { continue };
+        let Some(quota) = rule.quota_bytes else {
+            continue;
+        };
         if quota <= 0 {
             continue;
         }

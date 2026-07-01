@@ -167,7 +167,11 @@ impl RuleService {
     }
 
     /// 更新规则字段。
-    pub async fn update(&self, local_port: u16, req: &crate::domain::UpdateRuleRequest) -> anyhow::Result<RuleRecord> {
+    pub async fn update(
+        &self,
+        local_port: u16,
+        req: &crate::domain::UpdateRuleRequest,
+    ) -> anyhow::Result<RuleRecord> {
         let existing = self
             .find_by_port(local_port)
             .await?
@@ -225,12 +229,13 @@ impl RuleService {
     /// 仅切换启用状态。
     pub async fn set_enabled(&self, local_port: u16, enabled: bool) -> anyhow::Result<RuleRecord> {
         let now = Utc::now().to_rfc3339();
-        let result = sqlx::query("UPDATE rules SET enabled = ?, updated_at = ? WHERE local_port = ?")
-            .bind(enabled)
-            .bind(&now)
-            .bind(local_port)
-            .execute(&self.db)
-            .await?;
+        let result =
+            sqlx::query("UPDATE rules SET enabled = ?, updated_at = ? WHERE local_port = ?")
+                .bind(enabled)
+                .bind(&now)
+                .bind(local_port)
+                .execute(&self.db)
+                .await?;
         if result.rows_affected() == 0 {
             anyhow::bail!("规则不存在");
         }

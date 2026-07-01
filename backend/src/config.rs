@@ -126,6 +126,9 @@ mod tests {
     fn random_alphanumeric_format() {
         let s = random_alphanumeric(32);
         assert_eq!(s.len(), 32);
-        assert!(s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert!(
+            s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        );
     }
 }

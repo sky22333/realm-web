@@ -15,7 +15,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
 use super::TrafficMeter;
-use batch::{recoverable, Batch};
+use batch::{Batch, recoverable};
 use sockmap::SockMap;
 
 pub async fn run_udp(endpoint: Endpoint, meter: Arc<TrafficMeter>) {
@@ -39,15 +39,7 @@ pub async fn run_udp(endpoint: Endpoint, meter: Arc<TrafficMeter>) {
     let mut batch = Batch::new();
 
     loop {
-        if let Err(e) = relay_batch(
-            &listen,
-            &raddr,
-            &conn_opts,
-            &sockmap,
-            &mut batch,
-            &meter,
-        )
-        .await
+        if let Err(e) = relay_batch(&listen, &raddr, &conn_opts, &sockmap, &mut batch, &meter).await
         {
             if recoverable(e.kind()) {
                 debug!("UDP 可恢复错误: {e}");
@@ -186,9 +178,11 @@ fn associate(raddr: &SocketAddr, opts: &ConnectOpts) -> Result<UdpSocket> {
 /// Windows: ignore ICMP port-unreachable as a fatal recv error (WSASendMsg path).
 #[cfg(windows)]
 fn harden_udp(socket: &socket2::Socket) -> Result<()> {
-    use std::os::windows::io::AsRawSocket;
     use std::mem::size_of;
-    use windows_sys::Win32::Networking::WinSock::{SIO_UDP_CONNRESET, SOCKET, SOCKET_ERROR, WSAIoctl};
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        SIO_UDP_CONNRESET, SOCKET, SOCKET_ERROR, WSAIoctl,
+    };
 
     let disabled: u32 = 0;
     let mut out_bytes = 0u32;

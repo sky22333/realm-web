@@ -17,7 +17,13 @@ impl SockMap {
     where
         F: FnOnce() -> Result<Arc<UdpSocket>, E>,
     {
-        if let Some(sock) = self.0.read().unwrap_or_else(|e| e.into_inner()).get(addr).cloned() {
+        if let Some(sock) = self
+            .0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(addr)
+            .cloned()
+        {
             return Ok(sock);
         }
         let sock = f()?;

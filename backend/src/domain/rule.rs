@@ -89,7 +89,9 @@ impl ForwardRule {
         let (host, port) = line
             .rsplit_once(':')
             .ok_or_else(|| anyhow::anyhow!("无效格式，需要 主机:端口"))?;
-        let target_port: u16 = port.parse().map_err(|_| anyhow::anyhow!("无效端口: {port}"))?;
+        let target_port: u16 = port
+            .parse()
+            .map_err(|_| anyhow::anyhow!("无效端口: {port}"))?;
         if target_port == 0 {
             anyhow::bail!("端口不能为 0");
         }

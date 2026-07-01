@@ -42,10 +42,10 @@ impl LoginRateLimiter {
             return 0;
         };
 
-        if let Some(until) = entry.ban_until {
-            if until > now {
-                return (until - now).as_secs().max(1);
-            }
+        if let Some(until) = entry.ban_until
+            && until > now
+        {
+            return (until - now).as_secs().max(1);
         }
         0
     }
@@ -84,10 +84,10 @@ impl LoginRateLimiter {
     fn cleanup(&self, map: &mut HashMap<String, Entry>) {
         let now = Instant::now();
         map.retain(|_, e| {
-            if let Some(until) = e.ban_until {
-                if until > now {
-                    return true;
-                }
+            if let Some(until) = e.ban_until
+                && until > now
+            {
+                return true;
             }
             now.duration_since(e.last_seen).as_secs() < STALE_SECS
         });
@@ -136,9 +136,6 @@ mod tests {
     #[test]
     fn ipv6_normalized_to_slash64() {
         let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0x1234, 0x5678, 0, 0, 0, 1));
-        assert_eq!(
-            normalize_ip(ip),
-            "v6:2001:db8:1234:5678:/64"
-        );
+        assert_eq!(normalize_ip(ip), "v6:2001:db8:1234:5678:/64");
     }
 }

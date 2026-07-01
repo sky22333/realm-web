@@ -99,9 +99,8 @@ pub async fn connect(raddr: &RemoteAddr, conn_opts: &ConnectOpts) -> Result<TcpS
         }
     }
 
-    Err(last_err.unwrap_or_else(|| {
-        Error::new(ErrorKind::NotConnected, "could not connect to any address")
-    }))
+    Err(last_err
+        .unwrap_or_else(|| Error::new(ErrorKind::NotConnected, "could not connect to any address")))
 }
 
 pub fn apply_accept_keepalive(stream: &TcpStream, conn_opts: &ConnectOpts) {

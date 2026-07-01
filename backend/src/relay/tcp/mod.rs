@@ -7,8 +7,8 @@ use std::sync::Arc;
 use realm_core::endpoint::Endpoint;
 use tracing::warn;
 
-use super::counted::{bidi_relay, CountedTcpStream};
 use super::TrafficMeter;
+use super::counted::{CountedTcpStream, bidi_relay};
 
 pub async fn run_tcp(endpoint: Endpoint, meter: Arc<TrafficMeter>) {
     let Endpoint {

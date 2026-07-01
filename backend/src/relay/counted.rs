@@ -51,7 +51,11 @@ impl AsyncRead for CountedTcpStream {
 }
 
 impl AsyncWrite for CountedTcpStream {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize>> {
         match Pin::new(&mut self.inner).poll_write(cx, buf) {
             Poll::Ready(Ok(n)) => {
                 if n > 0 {
@@ -98,11 +102,7 @@ mod linux_raw {
             self.inner.poll_write_ready(cx)
         }
 
-        fn x_try_io<R>(
-            &self,
-            interest: Interest,
-            f: impl FnOnce() -> Result<R>,
-        ) -> Result<R> {
+        fn x_try_io<R>(&self, interest: Interest, f: impl FnOnce() -> Result<R>) -> Result<R> {
             self.inner.try_io(interest, f)
         }
     }
