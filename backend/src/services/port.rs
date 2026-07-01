@@ -3,11 +3,8 @@
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 
 /// 检测本地端口是否可用于监听。
-pub fn is_port_available(port: u16, reserved: &[u16], used_ports: &[u16]) -> bool {
+pub fn is_port_available(port: u16, used_ports: &[u16]) -> bool {
     if port == 0 {
-        return false;
-    }
-    if reserved.contains(&port) {
         return false;
     }
     if used_ports.contains(&port) {
@@ -19,18 +16,14 @@ pub fn is_port_available(port: u16, reserved: &[u16], used_ports: &[u16]) -> boo
 }
 
 /// 从起始端口起查找下一个可用端口。
-pub fn find_next_port(
-    start: u16,
-    reserved: &[u16],
-    used_ports: &[u16],
-) -> anyhow::Result<u16> {
+pub fn find_next_port(start: u16, used_ports: &[u16]) -> anyhow::Result<u16> {
     let mut port = start;
     loop {
-        if port > 65535 {
-            anyhow::bail!("没有可用端口");
-        }
-        if is_port_available(port, reserved, used_ports) {
+        if is_port_available(port, used_ports) {
             return Ok(port);
+        }
+        if port == u16::MAX {
+            anyhow::bail!("没有可用端口");
         }
         port += 1;
     }

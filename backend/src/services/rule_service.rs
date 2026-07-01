@@ -279,13 +279,12 @@ impl RuleService {
         mode: &PortAssignMode,
         used: &mut Vec<u16>,
     ) -> anyhow::Result<Vec<u16>> {
-        let reserved = &self.config.reserved_ports;
         match mode {
             PortAssignMode::Auto => {
                 let mut ports = Vec::with_capacity(count);
                 let mut cursor = self.config.default_start_port;
                 for _ in 0..count {
-                    let port = find_next_port(cursor, reserved, used)?;
+                    let port = find_next_port(cursor, used)?;
                     ports.push(port);
                     used.push(port);
                     cursor = port.saturating_add(1);
@@ -293,13 +292,13 @@ impl RuleService {
                 Ok(ports)
             }
             PortAssignMode::FromStart { start_port } => {
-                if *start_port == 0 || *start_port > 65535 {
-                    anyhow::bail!("起始端口必须在 1-65535 之间");
+                if *start_port == 0 {
+                    anyhow::bail!("起始端口无效");
                 }
                 let mut ports = Vec::with_capacity(count);
                 let mut cursor = *start_port;
                 for _ in 0..count {
-                    let port = find_next_port(cursor, reserved, used)?;
+                    let port = find_next_port(cursor, used)?;
                     ports.push(port);
                     used.push(port);
                     cursor = port.saturating_add(1);
@@ -311,10 +310,10 @@ impl RuleService {
                     anyhow::bail!("手动端口数量与目标数量不一致");
                 }
                 for port in ports {
-                    if *port == 0 || *port > 65535 {
+                    if *port == 0 {
                         anyhow::bail!("端口 {port} 无效");
                     }
-                    if !is_port_available(*port, reserved, used) {
+                    if !is_port_available(*port, used) {
                         anyhow::bail!("端口 {port} 不可用");
                     }
                 }

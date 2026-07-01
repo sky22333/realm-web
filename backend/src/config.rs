@@ -14,7 +14,6 @@ pub struct AppConfig {
     pub jwt_expire_hours: i64,
     pub default_start_port: u16,
     pub listen_host: IpAddr,
-    pub reserved_ports: Vec<u16>,
 }
 
 impl AppConfig {
@@ -36,10 +35,6 @@ impl AppConfig {
             .unwrap_or_else(|_| "0.0.0.0".into())
             .parse()?;
 
-        let reserved_ports = parse_port_list(
-            &std::env::var("RESERVED_PORTS").unwrap_or_else(|_| "22,80,443,888".into()),
-        );
-
         let (auth_username, auth_password) = resolve_auth_credentials();
         let jwt_secret = resolve_jwt_secret();
 
@@ -52,7 +47,6 @@ impl AppConfig {
             jwt_expire_hours: env_i64("JWT_EXPIRE_HOURS", 5),
             default_start_port: env_u16("DEFAULT_START_PORT", 1000),
             listen_host,
-            reserved_ports,
         })
     }
 }
@@ -122,12 +116,6 @@ fn env_i64(key: &str, default: i64) -> i64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
-}
-
-fn parse_port_list(raw: &str) -> Vec<u16> {
-    raw.split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect()
 }
 
 #[cfg(test)]

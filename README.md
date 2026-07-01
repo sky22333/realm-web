@@ -50,7 +50,6 @@ docker compose up -d --build
 | `AUTH_PASSWORD` | - | 登录密码；须与 `AUTH_USERNAME` 同时设置 |
 | `JWT_SECRET` | 每次启动随机 | 可选覆盖；仅内存，重启后需重新登录 |
 | `DEFAULT_START_PORT` | `1000` | 自动分配起始端口 |
-| `RESERVED_PORTS` | `22,80,443,888` | 保留端口 |
 | `SKIP_WEB_BUILD` | - | 设为 `1` 跳过 build.rs 中的前端构建 |
 
 ## 项目结构
