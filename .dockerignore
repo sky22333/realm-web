@@ -1,3 +1,6 @@
-target/
-data/
+.git
+data
 .env
+backend/target
+frontend/node_modules
+frontend/dist

@@ -38,6 +38,8 @@ cargo run
 docker compose up -d --build
 ```
 
+镜像基于 Alpine，BuildKit 会按当前主机架构构建（`linux/amd64` 或 `linux/arm64`）。多架构推送见 `.github/workflows/docker-ghcr.yml`。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
