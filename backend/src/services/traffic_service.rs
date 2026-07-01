@@ -5,38 +5,60 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::SqlitePool;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tracing::warn;
 
 use crate::domain::{RuleRecord, TrafficSnapshot, TrafficTotals};
-use crate::relay::TrafficMeter;
+use crate::relay::{RuleControl, TrafficMeter};
 
 /// 内存计数器 + 数据库持久化。
 pub struct TrafficService {
     db: SqlitePool,
-    /// 按本地端口索引的实时计数器。
     meters: RwLock<HashMap<u16, Arc<TrafficMeter>>>,
-    /// 端口 → 规则 ID。
+    controls: RwLock<HashMap<u16, Arc<RuleControl>>>,
     port_to_rule: RwLock<HashMap<u16, i64>>,
+    trip_tx: mpsc::UnboundedSender<u16>,
 }
 
 impl TrafficService {
-    pub fn new(db: SqlitePool) -> Self {
-        Self {
-            db,
-            meters: RwLock::new(HashMap::new()),
-            port_to_rule: RwLock::new(HashMap::new()),
-        }
+    pub fn new(db: SqlitePool) -> (Arc<Self>, mpsc::UnboundedReceiver<u16>) {
+        let (trip_tx, trip_rx) = mpsc::unbounded_channel();
+        (
+            Arc::new(Self {
+                db,
+                meters: RwLock::new(HashMap::new()),
+                controls: RwLock::new(HashMap::new()),
+                port_to_rule: RwLock::new(HashMap::new()),
+                trip_tx,
+            }),
+            trip_rx,
+        )
     }
 
-    /// 为规则注册或获取计数器。
+    /// 为规则注册或获取计数器与控制面。
     pub async fn meter_for(&self, rule: &RuleRecord) -> Arc<TrafficMeter> {
-        let mut map = self.meters.write().await;
-        let meter = map
-            .entry(rule.local_port)
-            .or_insert_with(|| Arc::new(TrafficMeter::default()))
-            .clone();
+        if let Some(meter) = self.meters.read().await.get(&rule.local_port) {
+            if let Some(control) = self.controls.read().await.get(&rule.local_port) {
+                control.set_quota(rule.quota_bytes.unwrap_or(0));
+            }
+            return meter.clone();
+        }
 
+        let mut meters = self.meters.write().await;
+        let mut controls = self.controls.write().await;
+
+        if let Some(meter) = meters.get(&rule.local_port) {
+            if let Some(control) = controls.get(&rule.local_port) {
+                control.set_quota(rule.quota_bytes.unwrap_or(0));
+            }
+            return meter.clone();
+        }
+
+        let control = Arc::new(RuleControl::new(rule.local_port, self.trip_tx.clone()));
+        control.set_quota(rule.quota_bytes.unwrap_or(0));
+        let meter = Arc::new(TrafficMeter::new(control.clone()));
+        controls.insert(rule.local_port, control);
+        meters.insert(rule.local_port, meter.clone());
         self.port_to_rule
             .write()
             .await
@@ -44,22 +66,34 @@ impl TrafficService {
         meter
     }
 
+    pub async fn control_for(&self, rule: &RuleRecord) -> Arc<RuleControl> {
+        self.meter_for(rule).await;
+        self.controls
+            .read()
+            .await
+            .get(&rule.local_port)
+            .cloned()
+            .expect("control exists after meter_for")
+    }
+
     pub async fn all_meters(&self) -> HashMap<u16, Arc<TrafficMeter>> {
         self.meters.read().await.clone()
     }
 
+    pub async fn all_controls(&self) -> HashMap<u16, Arc<RuleControl>> {
+        self.controls.read().await.clone()
+    }
+
     pub async fn remove_port(&self, local_port: u16) {
         self.meters.write().await.remove(&local_port);
+        self.controls.write().await.remove(&local_port);
         self.port_to_rule.write().await.remove(&local_port);
     }
 
     /// 重置指定端口的内存计数。
     pub async fn reset_meter(&self, local_port: u16) {
         if let Some(meter) = self.meters.read().await.get(&local_port) {
-            meter.tcp_rx.store(0, std::sync::atomic::Ordering::Relaxed);
-            meter.tcp_tx.store(0, std::sync::atomic::Ordering::Relaxed);
-            meter.udp_rx.store(0, std::sync::atomic::Ordering::Relaxed);
-            meter.udp_tx.store(0, std::sync::atomic::Ordering::Relaxed);
+            meter.reset();
         }
     }
 
@@ -106,18 +140,12 @@ impl TrafficService {
 
             let meter = self.meter_for(rule).await;
             if let Some((tcp_rx, tcp_tx, udp_rx, udp_tx)) = row {
-                meter
-                    .tcp_rx
-                    .store(tcp_rx as u64, std::sync::atomic::Ordering::Relaxed);
-                meter
-                    .tcp_tx
-                    .store(tcp_tx as u64, std::sync::atomic::Ordering::Relaxed);
-                meter
-                    .udp_rx
-                    .store(udp_rx as u64, std::sync::atomic::Ordering::Relaxed);
-                meter
-                    .udp_tx
-                    .store(udp_tx as u64, std::sync::atomic::Ordering::Relaxed);
+                meter.restore(&TrafficTotals {
+                    tcp_rx: tcp_rx as u64,
+                    tcp_tx: tcp_tx as u64,
+                    udp_rx: udp_rx as u64,
+                    udp_tx: udp_tx as u64,
+                });
             }
         }
         Ok(())
@@ -189,7 +217,6 @@ impl TrafficService {
             .collect()
     }
 
-    /// 检查是否超出配额。
     pub fn is_quota_exceeded(rule: &RuleRecord, totals: &TrafficTotals) -> bool {
         rule.quota_bytes
             .is_some_and(|q| q > 0 && totals.total_bytes() as i64 >= q)
@@ -208,8 +235,22 @@ impl TrafficService {
         });
     }
 
-    /// 检查流量配额，超额则自动停用规则。
-    pub fn spawn_quota_enforcement(state: crate::state::AppState, interval_secs: u64) {
+    /// 配额超额即时停服：meter trip → 停 runtime → 写 DB。
+    pub fn spawn_trip_handler(
+        mut trip_rx: mpsc::UnboundedReceiver<u16>,
+        state: crate::state::AppState,
+    ) {
+        tokio::spawn(async move {
+            while let Some(port) = trip_rx.recv().await {
+                if let Err(e) = handle_quota_trip(&state, port).await {
+                    warn!(port, "配额停服失败: {e:#}");
+                }
+            }
+        });
+    }
+
+    /// 配额周期重置 + DB/runtime 对账。
+    pub fn spawn_maintenance(state: crate::state::AppState, interval_secs: u64) {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
@@ -217,12 +258,32 @@ impl TrafficService {
                 if let Err(e) = reset_quota_periods(&state).await {
                     warn!("配额周期重置失败: {e:#}");
                 }
-                if let Err(e) = enforce_quotas(&state).await {
-                    warn!("配额检查失败: {e:#}");
+                if let Err(e) = reconcile_runtime(&state).await {
+                    warn!("转发对账失败: {e:#}");
                 }
             }
         });
     }
+}
+
+async fn handle_quota_trip(state: &crate::state::AppState, port: u16) -> anyhow::Result<()> {
+    let Some(rule) = state.rules.find_by_port(port).await? else {
+        return Ok(());
+    };
+    if !rule.enabled {
+        return Ok(());
+    }
+
+    let control = state.traffic.control_for(&rule).await;
+
+    {
+        let mut engine = state.engine.lock().await;
+        engine.stop_rule(port, &control).await?;
+    }
+
+    state.rules.set_enabled(port, false).await?;
+    warn!(port, "流量已达配额，规则已停服");
+    Ok(())
 }
 
 async fn reset_quota_periods(state: &crate::state::AppState) -> anyhow::Result<()> {
@@ -267,45 +328,51 @@ async fn reset_quota_periods(state: &crate::state::AppState) -> anyhow::Result<(
     Ok(())
 }
 
-async fn enforce_quotas(state: &crate::state::AppState) -> anyhow::Result<()> {
+/// DB 已停用但 engine 仍在跑 → 强制 stop（修复停服失败后的漂移）。
+async fn reconcile_runtime(state: &crate::state::AppState) -> anyhow::Result<()> {
     let rules = state.rules.list().await?;
-    let meters = state.traffic.all_meters().await;
+    let controls = state.traffic.all_controls().await;
+    let mut engine = state.engine.lock().await;
 
     for rule in &rules {
-        if !rule.enabled {
+        if rule.enabled || !engine.is_running(rule.local_port) {
             continue;
         }
-        let Some(quota) = rule.quota_bytes else {
-            continue;
-        };
-        if quota <= 0 {
-            continue;
+        if let Some(control) = controls.get(&rule.local_port) {
+            warn!(port = rule.local_port, "DB/runtime 不一致，强制停止转发");
+            engine.stop_rule(rule.local_port, control).await?;
         }
-        let totals = meters
-            .get(&rule.local_port)
-            .map(|m| m.snapshot())
-            .unwrap_or_default();
-        if !TrafficService::is_quota_exceeded(rule, &totals) {
-            continue;
-        }
-
-        warn!(port = rule.local_port, "流量已达配额，自动停用");
-        let updated = state.rules.set_enabled(rule.local_port, false).await?;
-        apply_rule_runtime(state, &updated).await?;
     }
     Ok(())
 }
 
-/// 根据规则状态同步转发引擎。
+/// 根据规则状态同步转发引擎：先停 runtime，再按需启动。
 pub async fn apply_rule_runtime(
     state: &crate::state::AppState,
     rule: &RuleRecord,
 ) -> anyhow::Result<()> {
     let meter = state.traffic.meter_for(rule).await;
+    let control = state.traffic.control_for(rule).await;
+    control.set_quota(rule.quota_bytes.unwrap_or(0));
+
     let mut engine = state.engine.lock().await;
-    engine.stop_rule(rule.local_port).await?;
+    engine.stop_rule(rule.local_port, &control).await?;
     if rule.enabled {
-        engine.start_rule(rule, meter).await?;
+        engine.start_rule(rule, meter, control).await?;
     }
     Ok(())
+}
+
+/// 停止转发（手动停用 / 删除 / 配额停服共用）。
+pub async fn stop_rule_runtime(state: &crate::state::AppState, port: u16) -> anyhow::Result<()> {
+    let control = if let Some(rule) = state.rules.find_by_port(port).await? {
+        state.traffic.control_for(&rule).await
+    } else if let Some(control) = state.traffic.all_controls().await.get(&port).cloned() {
+        control
+    } else {
+        return Ok(());
+    };
+
+    let mut engine = state.engine.lock().await;
+    engine.stop_rule(port, &control).await
 }

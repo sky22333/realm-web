@@ -11,7 +11,7 @@ use crate::domain::{
     DashboardStats, ForwardRule, PortAssignMode, QuotaPeriod, RuleRecord, TrafficSnapshot,
     UpdateRuleRequest,
 };
-use crate::services::apply_rule_runtime;
+use crate::services::{apply_rule_runtime, stop_rule_runtime};
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -127,9 +127,10 @@ pub async fn add_rules(
 
     for rule in &created {
         let meter = state.traffic.meter_for(rule).await;
+        let control = state.traffic.control_for(rule).await;
         if let Err(e) = {
             let mut engine = state.engine.lock().await;
-            engine.start_rule(rule, meter).await
+            engine.start_rule(rule, meter, control).await
         } {
             rollback_created(&state, &created).await;
             return (
@@ -187,7 +188,27 @@ pub async fn toggle_rule(
         Err(e) => return bad_request(e.to_string()),
     };
 
-    let updated = match state.rules.set_enabled(port, !current.enabled).await {
+    let new_enabled = !current.enabled;
+
+    if !new_enabled {
+        if let Err(e) = stop_rule_runtime(&state, port).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    success: false,
+                    message: Some(format!("停止转发失败: {e}")),
+                    data: None,
+                }),
+            );
+        }
+        let updated = match state.rules.set_enabled(port, false).await {
+            Ok(r) => r,
+            Err(e) => return bad_request(e.to_string()),
+        };
+        return ok(updated);
+    }
+
+    let updated = match state.rules.set_enabled(port, true).await {
         Ok(r) => r,
         Err(e) => return bad_request(e.to_string()),
     };
@@ -197,7 +218,7 @@ pub async fn toggle_rule(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse {
                 success: false,
-                message: Some(format!("切换状态失败: {e}")),
+                message: Some(format!("启动转发失败: {e}")),
                 data: None,
             }),
         );
@@ -228,8 +249,7 @@ pub async fn delete_rule(
     State(state): State<AppState>,
     Path(port): Path<u16>,
 ) -> Json<ApiResponse<()>> {
-    let mut engine = state.engine.lock().await;
-    let _ = engine.stop_rule(port).await;
+    let _ = stop_rule_runtime(&state, port).await;
     state.traffic.remove_port(port).await;
 
     match state.rules.delete_by_port(port).await {
@@ -255,9 +275,8 @@ pub async fn delete_batch(
     State(state): State<AppState>,
     Json(body): Json<BatchDeleteRequest>,
 ) -> Json<ApiResponse<BatchDeleteResponse>> {
-    let mut engine = state.engine.lock().await;
     for port in &body.ports {
-        let _ = engine.stop_rule(*port).await;
+        let _ = stop_rule_runtime(&state, *port).await;
         state.traffic.remove_port(*port).await;
     }
 
@@ -276,9 +295,8 @@ pub async fn delete_batch(
 }
 
 async fn rollback_created(state: &AppState, created: &[RuleRecord]) {
-    let mut engine = state.engine.lock().await;
     for r in created {
-        let _ = engine.stop_rule(r.local_port).await;
+        let _ = stop_rule_runtime(state, r.local_port).await;
         let _ = state.rules.delete_by_port(r.local_port).await;
         state.traffic.remove_port(r.local_port).await;
     }

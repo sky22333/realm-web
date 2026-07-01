@@ -12,13 +12,24 @@ use realm_core::endpoint::{BindOpts, ConnectOpts, Endpoint, RemoteAddr};
 use realm_core::realm_syscall::new_udp_socket;
 use realm_core::time::timeoutfut;
 use tokio::net::UdpSocket;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use super::RelaySession;
 use super::TrafficMeter;
 use batch::{Batch, recoverable};
 use sockmap::SockMap;
 
-pub async fn run_udp(endpoint: Endpoint, meter: Arc<TrafficMeter>) {
+struct UdpRelayEnv<'a> {
+    listen: &'a Arc<UdpSocket>,
+    rname: &'a RemoteAddr,
+    conn_opts: &'a ConnectOpts,
+    sockmap: &'a Arc<SockMap>,
+    meter: &'a Arc<TrafficMeter>,
+    session: &'a RelaySession,
+}
+
+pub async fn run_udp(endpoint: Endpoint, meter: Arc<TrafficMeter>, session: RelaySession) {
     let Endpoint {
         laddr,
         raddr,
@@ -37,50 +48,68 @@ pub async fn run_udp(endpoint: Endpoint, meter: Arc<TrafficMeter>) {
 
     let sockmap = Arc::new(SockMap::new());
     let mut batch = Batch::new();
+    let env = UdpRelayEnv {
+        listen: &listen,
+        rname: &raddr,
+        conn_opts: &conn_opts,
+        sockmap: &sockmap,
+        meter: &meter,
+        session: &session,
+    };
 
     loop {
-        if let Err(e) = relay_batch(&listen, &raddr, &conn_opts, &sockmap, &mut batch, &meter).await
-        {
-            if recoverable(e.kind()) {
-                debug!("UDP 可恢复错误: {e}");
-                continue;
+        tokio::select! {
+            () = session.shutdown.cancelled() => break,
+            res = relay_batch(&mut batch, &env) => {
+                if let Err(e) = res {
+                    if recoverable(e.kind()) {
+                        debug!("UDP 可恢复错误: {e}");
+                        continue;
+                    }
+                    warn!("UDP 转发错误: {e}");
+                }
             }
-            warn!("UDP 转发错误: {e}");
         }
     }
 }
 
-async fn relay_batch(
-    listen: &Arc<UdpSocket>,
-    rname: &RemoteAddr,
-    conn_opts: &ConnectOpts,
-    sockmap: &Arc<SockMap>,
-    batch: &mut Batch,
-    meter: &Arc<TrafficMeter>,
-) -> Result<()> {
-    batch.recv_on(listen).await?;
+async fn relay_batch(batch: &mut Batch, env: &UdpRelayEnv<'_>) -> Result<()> {
+    batch.recv_on(env.listen).await?;
     if batch.count() == 0 {
         return Ok(());
     }
 
-    for bytes in batch.rx_bytes() {
-        meter.add_udp_rx(bytes);
+    if env.session.shutdown.is_cancelled() {
+        return Ok(());
     }
 
-    let remote = resolve_first(rname).await?;
+    for bytes in batch.rx_bytes() {
+        env.meter.add_udp_rx(bytes);
+    }
+
+    if env.session.shutdown.is_cancelled() {
+        return Ok(());
+    }
+
+    let remote = resolve_first(env.rname).await?;
     batch.group_by_peer();
 
     for pkts in batch.peer_groups() {
+        if env.session.shutdown.is_cancelled() {
+            return Ok(());
+        }
         let client = pkts[0].peer;
-        let downstream = sockmap.find_or_insert(&client, || -> Result<Arc<UdpSocket>> {
-            let sock = Arc::new(associate(&remote, conn_opts)?);
-            tokio::spawn(send_back(
-                Arc::clone(listen),
+        let downstream = env.sockmap.find_or_insert(&client, || -> Result<Arc<UdpSocket>> {
+            let sock = Arc::new(associate(&remote, env.conn_opts)?);
+            let conn_shutdown = env.session.shutdown.child_token();
+            env.session.tracker.spawn(send_back(
+                Arc::clone(env.listen),
                 client,
                 Arc::clone(&sock),
-                conn_opts.associate_timeout,
-                Arc::clone(sockmap),
-                Arc::clone(meter),
+                env.conn_opts.associate_timeout,
+                Arc::clone(env.sockmap),
+                Arc::clone(env.meter),
+                conn_shutdown,
             ));
             Ok(sock)
         })?;
@@ -98,22 +127,27 @@ async fn send_back(
     associate_timeout: usize,
     sockmap: Arc<SockMap>,
     meter: Arc<TrafficMeter>,
+    shutdown: CancellationToken,
 ) {
     let mut batch = Batch::new();
     loop {
-        let recv = batch.recv_on(&downstream);
-        match timeoutfut(recv, associate_timeout).await {
-            Ok(Ok(())) if batch.count() > 0 => {
-                for bytes in batch.rx_bytes() {
-                    meter.add_udp_tx(bytes);
-                }
-                if batch.send_all_to(&listen, client).await.is_err() {
-                    break;
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            recv = timeoutfut(batch.recv_on(&downstream), associate_timeout) => {
+                match recv {
+                    Ok(Ok(())) if batch.count() > 0 => {
+                        for bytes in batch.rx_bytes() {
+                            meter.add_udp_tx(bytes);
+                        }
+                        if batch.send_all_to(&listen, client).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) if recoverable(e.kind()) => {}
+                    _ => break,
                 }
             }
-            Ok(Ok(())) => {}
-            Ok(Err(e)) if recoverable(e.kind()) => {}
-            _ => break,
         }
     }
     sockmap.remove(&client);

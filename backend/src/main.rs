@@ -46,13 +46,14 @@ async fn main() -> anyhow::Result<()> {
         "正在启动 realm-web"
     );
 
-    let traffic = Arc::new(TrafficService::new(db.clone()));
+    let (traffic, trip_rx) = TrafficService::new(db.clone());
     let engine = ForwardEngine::new();
     let state = AppState::new(config.clone(), db, traffic.clone(), engine);
 
     bootstrap_relays(&state).await?;
     traffic.clone().spawn_flush_task(60);
-    TrafficService::spawn_quota_enforcement(state.clone(), 30);
+    TrafficService::spawn_trip_handler(trip_rx, state.clone());
+    TrafficService::spawn_maintenance(state.clone(), 30);
 
     let listener = TcpListener::bind(("0.0.0.0", config.panel_port)).await?;
     info!(port = config.panel_port, "管理面板已就绪");
@@ -88,12 +89,28 @@ async fn connect_db(config: &AppConfig) -> anyhow::Result<sqlx::SqlitePool> {
 }
 
 async fn bootstrap_relays(state: &AppState) -> anyhow::Result<()> {
-    let rules = state.rules.list().await?;
+    let mut rules = state.rules.list().await?;
     traffic::hydrate_meters(state, &rules).await?;
 
     let meters = state.traffic.all_meters().await;
+    for rule in &rules {
+        if !rule.enabled {
+            continue;
+        }
+        let totals = meters
+            .get(&rule.local_port)
+            .map(|m| m.snapshot())
+            .unwrap_or_default();
+        if TrafficService::is_quota_exceeded(rule, &totals) {
+            state.rules.set_enabled(rule.local_port, false).await?;
+        }
+    }
+
+    rules = state.rules.list().await?;
+    let meters = state.traffic.all_meters().await;
+    let controls = state.traffic.all_controls().await;
     let mut engine = state.engine.lock().await;
-    engine.sync_rules(&rules, &meters).await?;
+    engine.sync_rules(&rules, &meters, &controls).await?;
     info!(count = rules.len(), "已恢复转发规则");
     Ok(())
 }

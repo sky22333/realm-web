@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::domain::RuleRecord;
-use crate::relay::{RelayHandle, TrafficMeter, start_rule};
+use crate::relay::{RelayHandle, RelaySession, RuleControl, TrafficMeter, start_rule};
 
 /// 管理各本地端口上的中继任务。
 pub struct ForwardEngine {
@@ -20,10 +20,15 @@ impl ForwardEngine {
         }
     }
 
+    pub fn is_running(&self, local_port: u16) -> bool {
+        self.tasks.contains_key(&local_port)
+    }
+
     pub async fn start_rule(
         &mut self,
         rule: &RuleRecord,
         meter: Arc<TrafficMeter>,
+        control: Arc<RuleControl>,
     ) -> anyhow::Result<()> {
         if !rule.enabled {
             return Ok(());
@@ -32,7 +37,14 @@ impl ForwardEngine {
             anyhow::bail!("端口 {} 已在转发中", rule.local_port);
         }
 
-        let handle = start_rule(rule, meter)?;
+        control.set_quota(rule.quota_bytes.unwrap_or(0));
+        control.start_session().await;
+        let session = RelaySession {
+            shutdown: control.shutdown_token().await,
+            tracker: control.tracker().await,
+        };
+
+        let handle = start_rule(rule, meter, session)?;
         self.tasks.insert(rule.local_port, handle);
 
         info!(
@@ -43,11 +55,20 @@ impl ForwardEngine {
         Ok(())
     }
 
-    pub async fn stop_rule(&mut self, local_port: u16) -> anyhow::Result<()> {
-        if let Some(handle) = self.tasks.remove(&local_port) {
-            handle.abort();
-            info!(port = local_port, "已停止转发");
-        }
+    pub async fn stop_rule(
+        &mut self,
+        local_port: u16,
+        control: &RuleControl,
+    ) -> anyhow::Result<()> {
+        let Some(handle) = self.tasks.remove(&local_port) else {
+            return Ok(());
+        };
+
+        control.stop_session().await;
+        control.wait_session().await;
+        handle.abort();
+
+        info!(port = local_port, "已停止转发");
         Ok(())
     }
 
@@ -55,6 +76,7 @@ impl ForwardEngine {
         &mut self,
         rules: &[RuleRecord],
         meters: &HashMap<u16, Arc<TrafficMeter>>,
+        controls: &HashMap<u16, Arc<RuleControl>>,
     ) -> anyhow::Result<()> {
         let desired: HashMap<u16, &RuleRecord> = rules
             .iter()
@@ -70,7 +92,13 @@ impl ForwardEngine {
             .collect();
 
         for port in to_stop {
-            self.stop_rule(port).await?;
+            if let Some(control) = controls.get(&port) {
+                self.stop_rule(port, control).await?;
+            } else {
+                if let Some(handle) = self.tasks.remove(&port) {
+                    handle.abort();
+                }
+            }
         }
 
         for rule in desired.values() {
@@ -81,7 +109,11 @@ impl ForwardEngine {
                 warn!(port = rule.local_port, "缺少流量计数器，跳过启动");
                 continue;
             };
-            if let Err(e) = self.start_rule(rule, meter.clone()).await {
+            let Some(control) = controls.get(&rule.local_port) else {
+                warn!(port = rule.local_port, "缺少转发控制，跳过启动");
+                continue;
+            };
+            if let Err(e) = self.start_rule(rule, meter.clone(), control.clone()).await {
                 warn!(port = rule.local_port, "启动转发失败: {e:#}");
             }
         }

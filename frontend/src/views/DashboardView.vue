@@ -299,9 +299,9 @@ onUnmounted(() => clearInterval(timer))
 <template>
   <div class="min-h-dvh bg-background">
     <header class="border-b border-border">
-      <div class="page-shell flex h-14 items-center justify-between">
-        <div class="text-sm font-medium tracking-tight">Realm 转发</div>
-        <div class="flex items-center gap-1">
+      <div class="page-shell flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
+        <div class="text-sm font-medium tracking-tight shrink-0">Realm 转发</div>
+        <div class="flex items-center gap-1 shrink-0">
           <Button variant="ghost" size="sm" :disabled="loading" @click="refresh">
             <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
             刷新
@@ -316,7 +316,7 @@ onUnmounted(() => clearInterval(timer))
 
     <main class="page-shell">
       <section class="section !py-5">
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-6">
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-4 sm:gap-6">
           <div class="stat-item">
             <span class="stat-label">规则总数</span>
             <span class="stat-value">{{ stats?.rule_count ?? '—' }}</span>
@@ -376,13 +376,13 @@ onUnmounted(() => clearInterval(timer))
 
       <section class="section border-b-0">
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
-          <h2 class="section-title !mb-0">规则列表 · {{ rules.length }}</h2>
-          <div class="flex gap-2">
-            <div class="relative flex-1 sm:w-56">
+          <h2 class="section-title !mb-0 shrink-0">规则列表 · {{ rules.length }}</h2>
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center w-full sm:w-auto">
+            <div class="relative w-full sm:w-56">
               <Search class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-              <Input v-model="search" class="pl-9" placeholder="搜索…" />
+              <Input v-model="search" class="pl-9 w-full" placeholder="搜索…" />
             </div>
-            <Button variant="destructive" size="sm" :disabled="!selected.size" @click="removeSelected">
+            <Button variant="destructive" size="sm" class="w-full sm:w-auto shrink-0" :disabled="!selected.size" @click="removeSelected">
               删除 ({{ selected.size }})
             </Button>
           </div>
@@ -464,39 +464,84 @@ onUnmounted(() => clearInterval(timer))
           </table>
         </div>
 
-        <div class="md:hidden divide-y divide-border/70">
-          <div v-if="!filteredRules.length" class="py-8 text-center text-muted-foreground text-sm">暂无规则</div>
-          <div v-for="item in filteredRules" :key="item.rule.id" class="py-4 space-y-2">
-            <div class="flex items-center gap-2">
+        <div class="md:hidden space-y-3">
+          <div v-if="loading && !rules.length" class="py-8 text-center text-muted-foreground text-sm">
+            <Loader2 class="inline h-4 w-4 animate-spin" />
+          </div>
+          <div v-else-if="!filteredRules.length" class="py-8 text-center text-muted-foreground text-sm">暂无规则</div>
+          <article
+            v-for="item in filteredRules"
+            v-else
+            :key="item.rule.id"
+            class="rounded-lg border border-border bg-card p-4 space-y-3"
+          >
+            <div class="flex items-start gap-3">
               <input
                 type="checkbox"
+                class="mt-1 shrink-0"
                 :checked="selected.has(item.rule.local_port)"
                 @change="toggleSelect(item.rule.local_port, ($event.target as HTMLInputElement).checked)"
               />
-              <span class="font-mono font-medium">:{{ item.rule.local_port }}</span>
-              <StatusBadge :variant="statusVariant(item)" class="ml-auto">{{ statusLabel(item) }}</StatusBadge>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-mono font-semibold tabular-nums">:{{ item.rule.local_port }}</span>
+                  <StatusBadge :variant="statusVariant(item)">{{ statusLabel(item) }}</StatusBadge>
+                </div>
+                <div class="mt-1 text-xs font-mono text-muted-foreground break-all">
+                  → {{ item.rule.target_host }}:{{ item.rule.target_port }}
+                </div>
+              </div>
             </div>
-            <div class="text-xs font-mono text-muted-foreground pl-6">
-              → {{ item.rule.target_host }}:{{ item.rule.target_port }}
+
+            <div class="grid grid-cols-2 gap-3 text-xs pl-7">
+              <div>
+                <div class="text-muted-foreground mb-0.5">流量</div>
+                <div class="tabular-nums font-medium">{{ formatBytes(trafficTotal(item)) }}</div>
+                <div class="text-[11px] text-muted-foreground mt-0.5">
+                  TCP {{ formatBytes(trafficBreakdown(item).tcp) }}
+                </div>
+                <div class="text-[11px] text-muted-foreground">
+                  UDP {{ formatBytes(trafficBreakdown(item).udp) }}
+                </div>
+              </div>
+              <div>
+                <div class="text-muted-foreground mb-0.5">配额</div>
+                <template v-if="item.rule.quota_bytes">
+                  <div class="text-xs">{{ quotaLabel(item) }}</div>
+                  <div class="mt-1.5 h-1 w-full max-w-[8rem] bg-muted overflow-hidden rounded-full">
+                    <div
+                      class="h-full rounded-full"
+                      :class="quotaPercent(item) >= 100 ? 'bg-destructive' : 'bg-primary'"
+                      :style="{ width: `${Math.min(quotaPercent(item), 100)}%` }"
+                    />
+                  </div>
+                  <div class="text-[11px] text-muted-foreground mt-0.5 tabular-nums">{{ quotaPercent(item) }}%</div>
+                </template>
+                <span v-else class="text-muted-foreground">不限</span>
+              </div>
             </div>
-            <div class="flex flex-wrap gap-1 pl-6 pt-1">
-              <Button variant="ghost" size="sm" @click="openEdit(item)">编辑</Button>
-              <Button variant="ghost" size="sm" @click="toggleRule(item)">
+
+            <div class="grid grid-cols-2 gap-2 pl-7">
+              <Button variant="outline" size="sm" class="w-full" @click="openEdit(item)">编辑</Button>
+              <Button variant="outline" size="sm" class="w-full" @click="toggleRule(item)">
                 {{ item.rule.enabled ? '停用' : '启用' }}
               </Button>
-              <Button variant="ghost" size="sm" @click="removeRule(item.rule.local_port)">删除</Button>
+              <Button variant="outline" size="sm" class="w-full" @click="resetTraffic(item)">清零</Button>
+              <Button variant="outline" size="sm" class="w-full text-destructive" @click="removeRule(item.rule.local_port)">
+                删除
+              </Button>
             </div>
-          </div>
+          </article>
         </div>
       </section>
     </main>
 
     <div
       v-if="editing"
-      class="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/20 p-4"
+      class="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/20 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
       @click.self="closeEdit"
     >
-      <div class="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-sm">
+      <div class="w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-sm">
         <div class="flex items-center justify-between mb-4">
           <span class="text-sm font-medium">编辑 · {{ editing.rule.local_port }}</span>
           <button type="button" class="text-xs text-muted-foreground hover:text-foreground" @click="closeEdit">关闭</button>
